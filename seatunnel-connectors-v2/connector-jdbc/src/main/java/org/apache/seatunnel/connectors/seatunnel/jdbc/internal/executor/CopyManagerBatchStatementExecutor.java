@@ -17,7 +17,9 @@
 package org.apache.seatunnel.connectors.seatunnel.jdbc.internal.executor;
 
 import org.apache.seatunnel.api.table.catalog.TableSchema;
+import org.apache.seatunnel.api.table.type.ArrayType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
+import org.apache.seatunnel.api.table.type.SqlType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
 import org.apache.seatunnel.common.exception.CommonErrorCodeDeprecated;
@@ -163,8 +165,13 @@ public class CopyManagerBatchStatementExecutor implements JdbcBatchStatementExec
                 case NULL:
                     csvRecord.add(null);
                     break;
-                case MAP:
                 case ARRAY:
+                    csvRecord.add(
+                            convertArrayToPostgresString(
+                                    (ArrayType<?, ?>) seaTunnelDataType,
+                                    record.getField(fieldIndex)));
+                    break;
+                case MAP:
                 case ROW:
                 default:
                     throw new JdbcConnectorException(
@@ -173,6 +180,89 @@ public class CopyManagerBatchStatementExecutor implements JdbcBatchStatementExec
             }
         }
         return csvRecord;
+    }
+
+    /**
+     * 将 SeaTunnel 数组值转换为 PostgreSQL COPY CSV 兼容的数组字符串格式。
+     * 例如: {"val1","val2",NULL,"val3"}
+     */
+    private String convertArrayToPostgresString(ArrayType<?, ?> arrayType, Object arrayValue) {
+        if (arrayValue == null) {
+            return null;
+        }
+        Object[] elements;
+        if (arrayValue instanceof Object[]) {
+            elements = (Object[]) arrayValue;
+        } else {
+            return null;
+        }
+        SqlType elementSqlType = arrayType.getElementType().getSqlType();
+        StringBuilder sb = new StringBuilder("{");
+        for (int i = 0; i < elements.length; i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            if (elements[i] == null) {
+                sb.append("NULL");
+            } else {
+                // 根据元素类型决定是否需要引号包裹
+                switch (elementSqlType) {
+                    case STRING:
+                        // 字符串需要双引号包裹，并转义内部的双引号和反斜杠
+                        sb.append("\"")
+                                .append(
+                                        elements[i]
+                                                .toString()
+                                                .replace("\\", "\\\\")
+                                                .replace("\"", "\\\""))
+                                .append("\"");
+                        break;
+                    case BOOLEAN:
+                    case TINYINT:
+                    case SMALLINT:
+                    case INT:
+                    case BIGINT:
+                    case FLOAT:
+                    case DOUBLE:
+                    case DECIMAL:
+                        // 数值和布尔类型不需要引号
+                        sb.append(elements[i].toString());
+                        break;
+                    case DATE:
+                        sb.append("\"")
+                                .append(
+                                        java.sql.Date.valueOf((LocalDate) elements[i]).toString())
+                                .append("\"");
+                        break;
+                    case TIME:
+                        sb.append("\"")
+                                .append(
+                                        java.sql.Time.valueOf((LocalTime) elements[i]).toString())
+                                .append("\"");
+                        break;
+                    case TIMESTAMP:
+                        sb.append("\"")
+                                .append(
+                                        java.sql.Timestamp.valueOf(
+                                                (LocalDateTime) elements[i])
+                                                .toString())
+                                .append("\"");
+                        break;
+                    default:
+                        // 其他类型尝试 toString
+                        sb.append("\"")
+                                .append(
+                                        elements[i]
+                                                .toString()
+                                                .replace("\\", "\\\\")
+                                                .replace("\"", "\\\""))
+                                .append("\"");
+                        break;
+                }
+            }
+        }
+        sb.append("}");
+        return sb.toString();
     }
 
     @Override
